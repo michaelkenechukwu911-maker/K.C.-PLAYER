@@ -1,0 +1,16 @@
+{
+  "name": "kc-player",
+  "version": "1.0.0",
+  "description": "KC-Player — watch, capture, and edit moments from your videos.",
+  "scripts": {
+    "sync": "npx cap sync",
+    "open:android": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.1.0",
+    "@capacitor/android": "^6.1.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.0"
+  }
+}
