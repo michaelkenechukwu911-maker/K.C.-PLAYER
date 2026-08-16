@@ -1,0 +1,119 @@
+name: Build KC-Player APK
+
+# Runs automatically every time you push to the repo, and can also be
+# triggered manually from the Actions tab ("Run workflow" button).
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Java (required by the Android build tools)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install project dependencies
+        run: npm install
+
+      - name: Generate the Android project
+        run: npx cap add android
+
+      - name: Verify the Android project was actually generated
+        run: |
+          if [ ! -f "android/app/src/main/AndroidManifest.xml" ]; then
+            echo "AndroidManifest.xml was not created — 'npx cap add android' likely failed above. Check that step's log."
+            exit 1
+          fi
+          echo "Found AndroidManifest.xml — proceeding."
+
+      - name: Copy in the custom native plugins
+        run: |
+          cp native-plugin-files/MediaAccessPlugin.kt android/app/src/main/java/com/kcplayer/app/MediaAccessPlugin.kt
+          cp native-plugin-files/ClipCopyPlugin.kt android/app/src/main/java/com/kcplayer/app/ClipCopyPlugin.kt
+
+      - name: Add the required permissions to the manifest
+        run: |
+          python3 - << 'EOF'
+          import xml.etree.ElementTree as ET
+
+          path = "android/app/src/main/AndroidManifest.xml"
+          ns = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", ns)
+
+          tree = ET.parse(path)
+          root = tree.getroot()
+          app_el = root.find("application")
+
+          existing_perms = {
+              el.get(f"{{{ns}}}name")
+              for el in root.findall("uses-permission")
+          }
+
+          # Copying a moment reads directly from the source video file via
+          # MediaExtractor — no screen/audio capture involved at all, so the
+          # only permission this app actually needs is video library access.
+          needed = [
+              ("android.permission.READ_MEDIA_VIDEO", {}),
+              ("android.permission.READ_EXTERNAL_STORAGE", {"maxSdkVersion": "32"}),
+          ]
+
+          app_index = list(root).index(app_el)
+          for perm, attrs in needed:
+              if perm in existing_perms:
+                  continue
+              el = ET.Element("uses-permission")
+              el.set(f"{{{ns}}}name", perm)
+              for k, v in attrs.items():
+                  el.set(f"{{{ns}}}{k}", v)
+              root.insert(app_index, el)
+              app_index += 1
+
+          tree.write(path, encoding="utf-8", xml_declaration=True)
+          print("Manifest updated successfully:")
+          print(open(path).read())
+          EOF
+
+      - name: Register the plugins in MainActivity
+        run: |
+          cat > android/app/src/main/java/com/kcplayer/app/MainActivity.kt << 'EOF'
+          package com.kcplayer.app
+
+          import android.os.Bundle
+          import com.getcapacitor.BridgeActivity
+
+          class MainActivity : BridgeActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  registerPlugin(MediaAccessPlugin::class.java)
+                  registerPlugin(ClipCopyPlugin::class.java)
+                  super.onCreate(savedInstanceState)
+              }
+          }
+          EOF
+
+      - name: Sync the web app into the native project
+        run: npx cap sync android
+
+      - name: Build the debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload the APK so it's downloadable from this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: kc-player-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
